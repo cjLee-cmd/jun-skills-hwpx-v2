@@ -45,7 +45,10 @@ mcp = FastMCP(
 
 def _python() -> str:
     """Return the Python executable to use (venv-aware)."""
-    venv_python = SKILL_DIR / ".venv" / "bin" / "python3"
+    if sys.platform == "win32":
+        venv_python = SKILL_DIR / ".venv" / "Scripts" / "python.exe"
+    else:
+        venv_python = SKILL_DIR / ".venv" / "bin" / "python3"
     if venv_python.exists():
         return str(venv_python)
     return sys.executable
