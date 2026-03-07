@@ -33,9 +33,24 @@ mcp = FastMCP(
         "   - Converts .md files into .hwpx with headings, tables, code blocks, "
         "lists, blockquotes, bold, cover page, headers/footers, auto-numbering.\n\n"
         "2. HWPX template → HWPX (reference-based): use analyze_hwpx → "
-        "extract_hwpx_xml → build_hwpx → validate_hwpx → page_guard_hwpx\n"
-        "   - Replicates an existing HWPX layout (99% fidelity), replacing only text content.\n"
+        "extract_hwpx_xml → (edit section0.xml with Python/lxml) → build_hwpx → validate_hwpx\n"
+        "   - Replicates an existing HWPX layout, replacing text content.\n"
         "   - Templates available: gonmun(공문), report(보고서), minutes(회의록), proposal(제안서).\n\n"
+        "CRITICAL: section0.xml editing rules (workflow 2):\n"
+        "  - Use lxml to parse and modify the extracted section0.xml.\n"
+        "  - Element order in section0.xml = render order in the document.\n"
+        "    Correct: [section_header_table] → [body_paragraphs] → [next_header] → [body]\n"
+        "    Wrong: all body paragraphs first, then all headers at the end.\n"
+        "  - When removing items (e.g. TOC entries), delete the entire <hp:p> element\n"
+        "    from its parent, not just clear <hp:t> text. Empty <hp:p> still renders\n"
+        "    (shows dotted tab leaders, page numbers, blank lines).\n"
+        "  - When TOC items are reduced, set the cell's vertAlign='TOP' on <hp:subList>\n"
+        "    to prevent content from floating to the center of the box.\n"
+        "  - After editing, verify the structure by extracting text from the built HWPX\n"
+        "    using extract_text_hwpx to confirm content and ordering.\n"
+        "  - page_guard_hwpx is for same-structure validation (e.g. filling in values).\n"
+        "    When sections are added/removed, it will report expected differences — \n"
+        "    use validate_hwpx for structural integrity instead.\n\n"
         "Only .hwpx files are supported — not legacy .hwp binary format."
     ),
 )
@@ -236,7 +251,12 @@ def extract_hwpx_xml(hwpx_path: str, extract_dir: str = "") -> str:
         f"Extracted successfully:\n"
         f"  header.xml  → {header_out}\n"
         f"  section0.xml → {section_out}\n\n"
-        f"Edit section0.xml to change text, then pass both paths to build_hwpx()."
+        f"Edit section0.xml with Python/lxml, then pass both paths to build_hwpx().\n\n"
+        f"IMPORTANT editing rules:\n"
+        f"  - Element order = render order. Keep [header_table] → [body] → [next_header] → [body].\n"
+        f"  - To remove items: delete entire <hp:p> from parent, don't just clear <hp:t> text.\n"
+        f"  - When reducing TOC items: set vertAlign='TOP' on the TOC cell's <hp:subList>.\n"
+        f"  - After build, use extract_text_hwpx to verify content and order."
     )
 
 
@@ -269,9 +289,13 @@ def page_guard_hwpx(
 ) -> str:
     """Check that output HWPX has not drifted in page count vs a reference.
 
+    Best for SAME-STRUCTURE edits (filling values into a form, replacing text
+    in-place without adding/removing paragraphs or tables). When sections are
+    added, removed, or restructured, expected differences will be reported as
+    failures — in that case use validate_hwpx for integrity checks instead.
+
     Compares paragraph count, table count, table dimensions, explicit
     page/column breaks, and overall text length between reference and output.
-    Always run this after build_hwpx() when working from a reference file.
 
     Args:
         reference_hwpx: Absolute path to the original reference .hwpx file.
@@ -311,17 +335,14 @@ def extract_text_hwpx(
     Returns:
         Extracted text content.
     """
-    script = str(SCRIPTS_DIR / "text_extract.py")
-    args = [_python(), script, hwpx_path]
-    if include_tables:
-        args.append("--include-tables")
-    if fmt == "markdown":
-        args += ["--format", "markdown"]
+    try:
+        from text_extract import extract_plain, extract_markdown
 
-    stdout, stderr, rc = _run(args)
-    if rc != 0:
-        return f"ERROR:\n{stderr or stdout}"
-    return stdout.strip()
+        if fmt == "markdown":
+            return extract_markdown(hwpx_path)
+        return extract_plain(hwpx_path, include_tables=include_tables)
+    except Exception as e:
+        return f"ERROR: {e}"
 
 
 if __name__ == "__main__":

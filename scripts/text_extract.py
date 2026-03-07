@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""Extract text from an HWPX document.
-
-Wraps python-hwpx's TextExtractor for convenient CLI use.
+"""Extract text from an HWPX document using lxml (no external hwpx dependency).
 
 Usage:
     python text_extract.py document.hwpx
@@ -11,43 +9,82 @@ Usage:
 
 import argparse
 import sys
+import zipfile
+from io import BytesIO
 from pathlib import Path
 
-from hwpx import TextExtractor
+from lxml import etree
+
+NS = {
+    "hp": "http://www.hancom.co.kr/hwpml/2011/paragraph",
+    "hs": "http://www.hancom.co.kr/hwpml/2011/section",
+}
+
+
+def _read_section_xml(hwpx_path: str) -> etree._Element:
+    with zipfile.ZipFile(hwpx_path, "r") as zf:
+        data = zf.read("Contents/section0.xml")
+    return etree.parse(BytesIO(data)).getroot()
+
+
+def _collect_text(elem, *, include_tables: bool = True) -> list[str]:
+    """Collect text from <hp:t> nodes, optionally including table cells."""
+    lines: list[str] = []
+    root = elem
+
+    if include_tables:
+        for t in root.findall(".//hp:t", NS):
+            text = "".join(t.itertext())
+            if text.strip():
+                lines.append(text)
+    else:
+        # Only top-level paragraphs (skip table content)
+        top_paras = root.findall("hp:p", NS)
+        for p in top_paras:
+            for t in p.findall(".//hp:t", NS):
+                text = "".join(t.itertext())
+                if text.strip():
+                    lines.append(text)
+    return lines
 
 
 def extract_plain(hwpx_path: str, *, include_tables: bool = False) -> str:
-    """Extract plain text from HWPX file."""
-
-    object_behavior = "nested" if include_tables else "skip"
-    with TextExtractor(hwpx_path) as ext:
-        return ext.extract_text(
-            include_nested=include_tables,
-            object_behavior=object_behavior,
-            skip_empty=True,
-        )
+    root = _read_section_xml(hwpx_path)
+    lines = _collect_text(root, include_tables=include_tables)
+    return "\n".join(lines)
 
 
 def extract_markdown(hwpx_path: str) -> str:
-    """Extract text as Markdown with section separators."""
-
+    root = _read_section_xml(hwpx_path)
     lines: list[str] = []
 
-    with TextExtractor(hwpx_path) as ext:
-        for section in ext.iter_sections():
-            if lines:
-                lines.append("")
-                lines.append("---")
-                lines.append("")
-
-            for para in ext.iter_paragraphs(section, include_nested=True):
-                text = para.text(object_behavior="nested")
+    # Top-level paragraphs
+    for p in root.findall("hp:p", NS):
+        # Check for tables
+        tables = p.findall(".//hp:tbl", NS)
+        if tables:
+            for tbl in tables:
+                rows = tbl.findall(".//hp:tr", NS)
+                for row in rows:
+                    cells = row.findall(".//hp:tc", NS)
+                    cell_texts = []
+                    for cell in cells:
+                        t_texts = []
+                        for t in cell.findall(".//hp:t", NS):
+                            text = "".join(t.itertext())
+                            if text.strip():
+                                t_texts.append(text.strip())
+                        cell_texts.append(" ".join(t_texts))
+                    lines.append("| " + " | ".join(cell_texts) + " |")
+            lines.append("")
+        else:
+            p_texts = []
+            for t in p.findall(".//hp:t", NS):
+                text = "".join(t.itertext())
                 if text.strip():
-                    if para.is_nested:
-                        # Table cell or nested content - indent
-                        lines.append(f"  {text}")
-                    else:
-                        lines.append(text)
+                    p_texts.append(text)
+            if p_texts:
+                lines.append("".join(p_texts))
 
     return "\n".join(lines)
 
